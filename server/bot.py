@@ -44,8 +44,10 @@ from pipecat.workers.runner import WorkerRunner
 
 import pipeline_registry
 from llm_factory import build_llm
+from prompts.greeting_hi import GREETING_TEXT
 from prompts.system_prompt_hi import SYSTEM_PROMPT
 from session_store import get_session, update_session
+from speech_normalizer import HindiSpeechNormalizer
 from tools.ask_calculation_engine import build_pipecat_tool
 from voice_observer import VoiceTurnObserver
 
@@ -56,6 +58,21 @@ load_dotenv(override=True)
 # audio problems.
 USER_IDLE_TIMEOUT_SECS = float(os.getenv("USER_IDLE_TIMEOUT_SECS") or 12.0)
 MAX_CONSECUTIVE_IDLE_CHECKS = 2
+
+# How long to keep waiting for the caller to resume after a speech segment's
+# transcript has arrived, before handing it to the LLM. Pipecat's default is
+# 0.6s, which is pure added latency on every turn: Sarvam's streaming STT only
+# returns a (final) transcript once its VAD has already seen the caller pause,
+# and returns NO partial transcripts at all, so the transcript of a finished
+# segment is the earliest the LLM can possibly see anything. Lowering this
+# dispatches it to the LLM as soon as that segment is transcribed. If the
+# caller keeps talking (or corrects themselves mid-sentence), VAD reports a
+# new turn, pipecat interrupts the in-flight LLM/TTS output, and the later
+# segment is appended to the context after the earlier one -- the system
+# prompt tells the model to answer the LATEST intent. Raise it if natural
+# mid-sentence pauses trigger too many throwaway LLM calls (each one re-sends
+# the full prompt).
+USER_SPEECH_TIMEOUT_SECS = float(os.getenv("USER_SPEECH_TIMEOUT_SECS") or 0.2)
 
 # How recent a /session/{id}/typing ping has to be for silence to still
 # count as "user is composing a question in the text box", not "call went
@@ -138,7 +155,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             # seconds. Silero VAD (already configured above) is lightweight
             # and this swaps end-of-turn detection to a plain VAD-plus-timer
             # strategy instead of a second local model.
-            user_turn_strategies=UserTurnStrategies(stop=[SpeechTimeoutUserTurnStopStrategy()]),
+            user_turn_strategies=UserTurnStrategies(
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=USER_SPEECH_TIMEOUT_SECS)]
+            ),
         ),
     )
 
@@ -148,6 +167,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             stt,
             user_aggregator,
             llm,
+            # Enforces the Devanagari-only rule on whatever the LLM actually
+            # streamed (digits -> number words, loanwords -> Devanagari,
+            # Latin leaks logged) before it reaches TTS -- see hindi_text.py.
+            HindiSpeechNormalizer(session_id),
             tts,
             transport.output(),
             assistant_aggregator,
@@ -187,18 +210,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             )
             return
 
-        context.add_message(
-            {
-                "role": "developer",
-                "content": (
-                    "Start the conversation now: greet the user warmly and briefly "
-                    "in ONE natural line, then in that same turn ask what they'd "
-                    "like to know about their business today -- don't stop at just "
-                    "the greeting and wait silently for the user to speak first."
-                ),
-            }
-        )
-        await worker.queue_frames([LLMRunFrame()])
+        # A fixed line straight to TTS -- no LLM round trip (see
+        # prompts/greeting_hi.py). TTSSpeakFrame text is appended to the
+        # context as an assistant message, so the model knows it already
+        # greeted and asked its opening question.
+        await worker.queue_frames([TTSSpeakFrame(GREETING_TEXT)])
 
     idle_check_count = 0
 

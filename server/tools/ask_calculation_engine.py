@@ -22,6 +22,7 @@ import traceback
 from loguru import logger
 
 from engine.engine import EngineError, dispatch
+from hindi_numbers import number_to_hindi_words
 from engine.schema import METRIC_CATEGORIES, IntentValidationError, validate_intent
 from query_log import (
     QueryLogEntry, STATUS_AMBIGUOUS_ENTITY, STATUS_ANSWERED, STATUS_TOOL_CRASH, STATUS_UNFULFILLED, append, get_entry,
@@ -130,15 +131,17 @@ TOOL_DESCRIPTION = (
     "full list, and never fabricate the remaining entities yourself. "
     "If result.period.is_partial=true, its `note` explains that the requested period isn't fully covered (either "
     "it hasn't finished yet, e.g. 'this_year' when only half the year has happened, or the data doesn't go back "
-    "far enough) -- ALWAYS relay this honestly in the narration (e.g. 'yeh sirf ab tak ka data hai, poora saal "
-    "nahi'). Never state a partial-period figure as if it were the complete period. "
+    "far enough) -- ALWAYS relay this honestly in the narration (e.g. 'यह सिर्फ़ अब तक का डेटा है, पूरा साल "
+    "नहीं'). Never state a partial-period figure as if it were the complete period. "
     "After calling this, narrate the answer using ONLY the numbers returned in "
     "`result` -- do not introduce, round unusually, or infer any additional figures. "
-    "Every rupee amount that has a lakh/crore-scale sibling field named '<field>_inr_words' (e.g. "
-    "result.value_inr_words = '5.5 crore rupees') MUST be spoken using that EXACT phrase -- never convert the raw "
-    "number to lakh/crore yourself. Manual lakh-vs-crore conversion is exactly the kind of mental arithmetic that's "
-    "easy to get wrong (e.g. stating a real 5.5 crore figure as '55 lakh', which is actually 10x smaller) -- the "
-    "correct phrase is already computed for you, just read it back."
+    "Every rupee amount that has a sibling field named '<field>_inr_words' (e.g. "
+    "result.value_inr_words = 'पाँच दशमलव पाँच करोड़ रुपये') MUST be spoken using that EXACT phrase -- never convert "
+    "the raw number to lakh/crore yourself. Manual lakh-vs-crore conversion is exactly the kind of mental arithmetic "
+    "that's easy to get wrong (e.g. stating a real 5.5 crore figure as '55 lakh', which is actually 10x smaller) -- "
+    "the correct phrase, already spelled in Devanagari words as the voice output requires, is computed for you; "
+    "just read it back. All other figures you speak (percentages, counts, days) must likewise be written as "
+    "Devanagari number words, never digits."
 )
 
 TOOL_PARAMETERS = {
@@ -204,16 +207,21 @@ def _format_inr_words(amount: float) -> str:
     lakh", which is actually what Rs 55 lakh would be -- 10x smaller). The
     narration is instructed (see TOOL_DESCRIPTION) to read this string
     verbatim instead of converting the raw number itself."""
-    sign = "-" if amount < 0 else ""
+    sign = "ऋण " if amount < 0 else ""
     a = abs(amount)
     if a >= 1_00_00_000:
-        n, unit = a / 1_00_00_000, "crore"
+        n, unit = a / 1_00_00_000, " करोड़"
     elif a >= 1_00_000:
-        n, unit = a / 1_00_000, "lakh"
+        n, unit = a / 1_00_000, " लाख"
     else:
-        return f"{sign}{a:,.2f} rupees"
+        # Whole rupees: "छह हज़ार पाँच सौ चौबीस दशमलव एक चार रुपये" is not
+        # something anyone says out loud, and the grounding tolerance
+        # (hallucination_check.py) comfortably covers sub-rupee rounding.
+        n, unit = round(a), ""
+    # Spelled in Devanagari words (not digits) because the voice output is
+    # Devanagari-only (see hindi_text.py); hallucination_check.py parses it back.
     n_str = f"{n:.2f}".rstrip("0").rstrip(".")
-    return f"{sign}{n_str} {unit} rupees"
+    return f"{sign}{number_to_hindi_words(n_str)}{unit} रुपये"
 
 
 def _annotate_currency(obj, metric: str | None = None):

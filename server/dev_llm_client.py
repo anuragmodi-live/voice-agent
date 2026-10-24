@@ -25,6 +25,7 @@ from loguru import logger
 
 import grounding
 import transcripts
+from hindi_text import normalize_for_speech
 from prompts.system_prompt_hi import SYSTEM_PROMPT
 from query_log import QueryLogEntry, STATUS_NO_ENGINE_CALL, append as log_append
 from session_store import get_session, update_session
@@ -45,8 +46,8 @@ _NUDGE_MESSAGE = (
     "infer any number yourself. Call ask_calculation_engine now for the user's question."
 )
 _FALLBACK_NARRATION = (
-    "Arre, yeh wala main abhi verify nahi kar paayi — koi baat nahi! Aap ise thoda alag tarike se "
-    "poochiye, ya kisi aur specific business metric ke baare mein poochiye, main zaroor madad karungi."
+    "अरे, यह वाला मैं अभी वेरिफ़ाई नहीं कर पाई — कोई बात नहीं! आप इसे थोड़ा अलग तरीके से "
+    "पूछिए, या किसी और बिज़नेस मेट्रिक के बारे में पूछिए, मैं ज़रूर मदद करूँगी।"
 )
 
 
@@ -72,6 +73,11 @@ async def ask(session_id: str, question: str) -> dict:
         narration, log_ids = await _run_anthropic(session_id, history, question)
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {provider}")
+
+    # Same Devanagari-only enforcement the voice path applies before TTS
+    # (speech_normalizer.py), so /ask narration -- what gets logged, grounded
+    # and judged -- has the same shape as what the voice agent would say.
+    narration = normalize_for_speech(narration)
 
     now = time.time()
     update_session(

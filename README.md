@@ -89,6 +89,51 @@ same review pattern as `kyc-voice-agent`'s session confirm/dispute.
 cross-references logged answers against that dataset's `ground_truth.json`
 server-side, for datasets that have one.
 
+## Voice output: Devanagari-only speech, cached greeting, early LLM hand-off
+
+**Devanagari-only speech.** Sarvam's TTS mispronounces Latin-script words and
+digit strings inside Hindi sentences, so everything the agent *speaks* is pure
+Devanagari — English loanwords ("रेवेन्यू", "मार्जिन"), entity names, and
+numbers spelled as Hindi words ("पाँच दशमलव पाँच करोड़ रुपये"). Tool arguments
+(e.g. `entity_name`) stay in the data's own Latin spelling. Enforced in layers,
+because a prompt alone drifts back to Roman script on long answers:
+
+1. `prompts/system_prompt_hi.py` states the rule at the top *and* the very end
+   of the prompt, and every spoken example in it is Devanagari.
+2. `tools/ask_calculation_engine.py` emits each `<field>_inr_words` phrase
+   already spelled in Devanagari (built by `hindi_numbers.py`), which the model
+   reads verbatim instead of converting rupee amounts itself.
+3. `speech_normalizer.py` (a pipecat processor between the LLM and TTS) runs
+   `hindi_text.normalize_for_speech()` on the streamed text: digits, `₹`/`Rs`
+   and `%` become number words, and a table of common business loanwords is
+   rewritten to Devanagari. Latin words that survive (names, product codes) are
+   logged per response, so drift is visible. The assistant context records the
+   *spoken* text, so later turns see a Devanagari-only history too. The `/ask`
+   text path applies the same normalization.
+4. `hallucination_check.py` now also parses Devanagari number words back into
+   values (`hindi_numbers.extract_spoken_numbers`), so narrated figures are
+   still grounded against the engine trace — e.g. "पचपन लाख" for a real 5.5
+   crore result is still flagged.
+
+**Cached greeting.** The opening line is a constant
+(`prompts/greeting_hi.py`, override with `GREETING_TEXT`) sent straight to TTS
+as a `TTSSpeakFrame` — no LLM round trip before the caller hears anything. It
+is appended to the context, so the model knows it already greeted.
+
+**Early LLM hand-off.** `bot.py` lowers the turn-end wait
+(`USER_SPEECH_TIMEOUT_SECS`, default `0.2`; pipecat's default is `0.6`) so each
+transcribed speech segment goes to the LLM immediately. If the caller keeps
+talking or changes the request mid-sentence, pipecat interrupts the in-flight
+reply and the later segment is appended to the context; the prompt tells the
+model to answer the *latest* intent. Limit: Sarvam's streaming STT returns only
+final per-segment transcripts (no partials, and only after its VAD sees a
+pause), so true character-by-character hand-off isn't possible without
+switching STT provider.
+
+Tests (plain asserts, also pytest-compatible), from `server/`:
+`python tests/test_hindi_numbers.py`, `tests/test_hindi_text.py`,
+`tests/test_speech_normalizer.py`.
+
 ## Setup
 
 ```bash

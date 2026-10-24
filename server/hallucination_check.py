@@ -15,10 +15,18 @@ lakh/crore numbering ("10.45 crore", "10 करोड़ 45 लाख") rather t
 digit string -- this is expected, correct narration, not a hallucination, so
 lakh/crore/thousand terms are resolved to their actual value (combining
 adjacent terms like "10 crore 45 lakh" into one number) before comparing.
+
+Narration is now spoken as Devanagari number WORDS rather than digits (the
+TTS mispronounces digit strings), so hindi_numbers.extract_spoken_numbers()
+parses spelled-out figures back into values and feeds them into the same
+comparison -- digit forms still work, for the text path and for any digit the
+model emits before speech_normalizer.py rewrites it.
 """
 from __future__ import annotations
 
 import re
+
+from hindi_numbers import extract_spoken_numbers
 
 # Product/SKU codes returned by the engine itself (e.g. "BL972", "JE889")
 # glue digits directly onto letters. A plain \d+ regex with edge-only
@@ -96,6 +104,10 @@ def _parse_numbers(text: str) -> list[float]:
             out.append(float(raw))
         except ValueError:
             continue
+    # The voice output is Devanagari-only, so the figures the bot speaks are
+    # number WORDS ("पाँच दशमलव पाँच करोड़"), not digits -- parse those back to
+    # values too, or the whole check would silently see no numbers at all.
+    out.extend(extract_spoken_numbers(text))
     return out
 
 
