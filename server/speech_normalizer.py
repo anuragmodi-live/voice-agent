@@ -20,6 +20,7 @@ are logged per response so drift is visible rather than silent.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -30,7 +31,13 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from hindi_text import latin_leaks, normalize_for_speech
+from hindi_text import (
+    could_be_marker_prefix,
+    infer_expected_answer,
+    latin_leaks,
+    normalize_for_speech,
+    split_leading_marker,
+)
 
 # A held-back tail only needs to stay held while it could still become (part
 # of) a digit string or a Latin word; a tail that is pure Devanagari/punctuation
@@ -39,19 +46,49 @@ _NEEDS_LOOKAHEAD_RE = re.compile(r"[A-Za-z0-9₹%.,\-]")
 
 
 class HindiSpeechNormalizer(FrameProcessor):
-    def __init__(self, session_id: str, **kwargs):
+    def __init__(
+        self,
+        session_id: str,
+        on_expected_answer: Callable[[str], None] | None = None,
+        **kwargs,
+    ):
+        """on_expected_answer: called at the end of every LLM response with the
+        answer length the model declared via its <<ANS:...>> marker ("short" /
+        "normal" / "long"; "normal" when the reply had no marker), so the turn-end
+        wait can adapt to the caller's next answer -- see adaptive_turn.py."""
         super().__init__(**kwargs)
         self._session_id = session_id
+        self._on_expected_answer = on_expected_answer
         self._pending = ""
         self._response_text = ""
         self._last_text_frame: LLMTextFrame | None = None
+        # The marker, if any, is the very first thing in a reply, so the first
+        # chunks are held back until it is either parsed or ruled out.
+        self._head = ""
+        self._marker_resolved = False
+        self._marker_kind: str | None = None
+
+    def _reset_response_state(self) -> None:
+        self._head = ""
+        self._marker_resolved = False
+        self._marker_kind = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, LLMTextFrame):
             self._last_text_frame = frame
-            self._pending += frame.text
+            text = frame.text
+            if not self._marker_resolved:
+                self._head += text
+                if could_be_marker_prefix(self._head):
+                    return  # might still be the marker; hold
+                self._marker_kind, text = split_leading_marker(self._head)
+                self._head = ""
+                self._marker_resolved = True
+                if not text:
+                    return
+            self._pending += text
             ready, self._pending = self._split_ready(self._pending)
             if not ready:
                 return  # still mid-word; wait for the next chunk
@@ -62,12 +99,21 @@ class HindiSpeechNormalizer(FrameProcessor):
             return
 
         if isinstance(frame, LLMFullResponseEndFrame):
+            if self._head:  # never resolved into a marker (e.g. a lone "<<A") -- it is just text
+                self._pending += self._head
             await self._flush(direction)
+            # The model's own marker wins; when it forgot one, read the
+            # closing question off the reply itself.
+            expected = self._marker_kind or infer_expected_answer(self._response_text)
             self._report_leaks()
+            if self._on_expected_answer is not None:
+                self._on_expected_answer(expected)
+            self._reset_response_state()
         elif isinstance(frame, InterruptionFrame):
             self._pending = ""
             self._response_text = ""
             self._last_text_frame = None
+            self._reset_response_state()
 
         await self.push_frame(frame, direction)
 

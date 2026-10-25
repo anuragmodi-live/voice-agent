@@ -130,9 +130,29 @@ final per-segment transcripts (no partials, and only after its VAD sees a
 pause), so true character-by-character hand-off isn't possible without
 switching STT provider.
 
+**Adaptive turn-end wait** (`adaptive_turn.py`). How long to wait for the
+caller to resume depends on what was just asked. A yes/no or one-word answer
+→ barge in almost at once (`TURN_WAIT_SHORT_SECS`, default `0.05`); dictated
+digits, emails or full names → wait much longer (`TURN_WAIT_LONG_SECS`,
+default `2.0`); everything else → `USER_SPEECH_TIMEOUT_SECS` (`0.2`). The wait
+applies to the caller's *next* turn. The expected answer length comes from:
+
+1. a `<<ANS:SHORT|NORMAL|LONG>>` marker the model is prompted to put at the
+   start of any reply that ends in a question (stripped before TTS and logging
+   by `speech_normalizer.py`), else
+2. `hindi_text.infer_expected_answer()`, a conservative read of the reply's
+   closing question (dictation keywords → long; a `क्या …?` question with no
+   other question word → short; anything unclear → normal). In a live check
+   deepseek-chat emitted no marker at all, so this fallback does most of the
+   work today.
+
+Note this agent rarely asks for emails, card/Aadhaar/PAN numbers or names; the
+machinery is generic and is mostly exercised by its yes/no follow-ups ("want
+the full list?").
+
 Tests (plain asserts, also pytest-compatible), from `server/`:
 `python tests/test_hindi_numbers.py`, `tests/test_hindi_text.py`,
-`tests/test_speech_normalizer.py`.
+`tests/test_speech_normalizer.py`, `tests/test_adaptive_turn.py`.
 
 ## Setup
 

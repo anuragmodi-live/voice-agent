@@ -38,11 +38,11 @@ from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.sarvam.tts import SarvamTTSService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import BaseTransport, TransportParams
-from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 import pipeline_registry
+from adaptive_turn import AdaptiveSpeechTimeoutUserTurnStopStrategy
 from llm_factory import build_llm
 from prompts.greeting_hi import GREETING_TEXT
 from prompts.system_prompt_hi import SYSTEM_PROMPT
@@ -59,20 +59,9 @@ load_dotenv(override=True)
 USER_IDLE_TIMEOUT_SECS = float(os.getenv("USER_IDLE_TIMEOUT_SECS") or 12.0)
 MAX_CONSECUTIVE_IDLE_CHECKS = 2
 
-# How long to keep waiting for the caller to resume after a speech segment's
-# transcript has arrived, before handing it to the LLM. Pipecat's default is
-# 0.6s, which is pure added latency on every turn: Sarvam's streaming STT only
-# returns a (final) transcript once its VAD has already seen the caller pause,
-# and returns NO partial transcripts at all, so the transcript of a finished
-# segment is the earliest the LLM can possibly see anything. Lowering this
-# dispatches it to the LLM as soon as that segment is transcribed. If the
-# caller keeps talking (or corrects themselves mid-sentence), VAD reports a
-# new turn, pipecat interrupts the in-flight LLM/TTS output, and the later
-# segment is appended to the context after the earlier one -- the system
-# prompt tells the model to answer the LATEST intent. Raise it if natural
-# mid-sentence pauses trigger too many throwaway LLM calls (each one re-sends
-# the full prompt).
-USER_SPEECH_TIMEOUT_SECS = float(os.getenv("USER_SPEECH_TIMEOUT_SECS") or 0.2)
+# How long to wait for the caller to resume before handing their transcribed
+# speech to the LLM is adaptive -- see adaptive_turn.py (short for yes/no-style
+# answers, long for dictated digits/names, tunable via env vars).
 
 # How recent a /session/{id}/typing ping has to be for silence to still
 # count as "user is composing a question in the text box", not "call went
@@ -143,6 +132,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         messages=resumed_messages if is_resume else [{"role": "system", "content": SYSTEM_PROMPT}],
         tools=ToolsSchema(standard_tools=[ask_calculation_engine]),
     )
+    # Turn-end wait that follows what the agent last asked: updated by
+    # HindiSpeechNormalizer below from the model's <<ANS:...>> marker.
+    turn_stop_strategy = AdaptiveSpeechTimeoutUserTurnStopStrategy(session_id=session_id)
+
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
@@ -155,9 +148,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             # seconds. Silero VAD (already configured above) is lightweight
             # and this swaps end-of-turn detection to a plain VAD-plus-timer
             # strategy instead of a second local model.
-            user_turn_strategies=UserTurnStrategies(
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=USER_SPEECH_TIMEOUT_SECS)]
-            ),
+            user_turn_strategies=UserTurnStrategies(stop=[turn_stop_strategy]),
         ),
     )
 
@@ -170,7 +161,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             # Enforces the Devanagari-only rule on whatever the LLM actually
             # streamed (digits -> number words, loanwords -> Devanagari,
             # Latin leaks logged) before it reaches TTS -- see hindi_text.py.
-            HindiSpeechNormalizer(session_id),
+            HindiSpeechNormalizer(session_id, on_expected_answer=turn_stop_strategy.set_expected_answer),
             tts,
             transport.output(),
             assistant_aggregator,

@@ -25,7 +25,7 @@ from loguru import logger
 
 import grounding
 import transcripts
-from hindi_text import normalize_for_speech
+from hindi_text import normalize_for_speech, strip_answer_marker
 from prompts.system_prompt_hi import SYSTEM_PROMPT
 from query_log import QueryLogEntry, STATUS_NO_ENGINE_CALL, append as log_append
 from session_store import get_session, update_session
@@ -77,7 +77,7 @@ async def ask(session_id: str, question: str) -> dict:
     # Same Devanagari-only enforcement the voice path applies before TTS
     # (speech_normalizer.py), so /ask narration -- what gets logged, grounded
     # and judged -- has the same shape as what the voice agent would say.
-    narration = normalize_for_speech(narration)
+    narration = normalize_for_speech(strip_answer_marker(narration)[0])
 
     now = time.time()
     update_session(

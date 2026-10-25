@@ -86,6 +86,68 @@ def normalize_for_speech(text: str) -> str:
     return text
 
 
+# The model prefixes a reply with <<ANS:SHORT|NORMAL|LONG>> to declare how long
+# the caller's answer to its question will be (see adaptive_turn.py). It is a
+# control token, never speech, so it is stripped before TTS and before logging.
+_ANSWER_MARKER_RE = re.compile(r"\s*<<\s*ANS\s*:\s*(SHORT|NORMAL|LONG)\s*>>\s*", re.IGNORECASE)
+_MARKER_OPENING = "<<ANS:"
+
+
+def strip_answer_marker(text: str) -> tuple[str, str | None]:
+    """(text without any answer marker, the last marker's kind in lowercase or None)."""
+    kinds = [m.group(1).lower() for m in _ANSWER_MARKER_RE.finditer(text)]
+    return (_ANSWER_MARKER_RE.sub(" ", text).strip() if kinds else text), (kinds[-1] if kinds else None)
+
+
+# Fallback for when the model forgets the marker (it often does: in a live
+# check it emitted none, even on an obvious yes/no question). Reads the reply's
+# own closing question, conservatively -- an open question wrongly judged SHORT
+# would cut the caller off, so anything unclear stays NORMAL.
+_LONG_ANSWER_RE = re.compile(
+    r"ईमेल|ई-मेल|मेल आईडी|कार्ड|आधार|पैन\b|फ़ोन नंबर|फोन नंबर|मोबाइल नंबर|पूरा नाम|स्पेलिंग|नंबर बताइ"
+)
+_WH_WORD_RE = re.compile(r"कौन|कितन|कब\b|कहाँ|कहां|कैसे|क्यों|किस|कैसा|कैसी")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[।?!.])\s+")
+
+
+def infer_expected_answer(text: str) -> str:
+    """"long" / "short" / "normal" from the closing question of a spoken reply."""
+    text = text.strip()
+    if not text.endswith("?"):
+        return "normal"
+    question = _SENTENCE_SPLIT_RE.split(text)[-1]
+    if _LONG_ANSWER_RE.search(question):
+        return "long"
+    # Yes/no question: opens with "क्या" and contains no other question word
+    # anywhere. Even "क्या आप जानना चाहेंगे कि कितने दिन...?" stays NORMAL: it
+    # is ambiguous whether that is an offer or a request, and NORMAL is the
+    # safe side of that doubt.
+    if question.startswith("क्या") and not _WH_WORD_RE.search(question):
+        return "short"
+    return "normal"
+
+
+def split_leading_marker(head: str) -> tuple[str | None, str]:
+    """For the first streamed text of a reply: (marker kind or None, the text
+    after the marker). Unlike strip_answer_marker this keeps the remaining
+    text's whitespace intact, since more chunks are about to be appended to it."""
+    m = _ANSWER_MARKER_RE.match(head)
+    if not m:
+        return None, head
+    return m.group(1).lower(), head[m.end():]
+
+
+def could_be_marker_prefix(head: str) -> bool:
+    """True while `head` (the first streamed chunks of a reply) might still turn
+    into an answer marker, so the caller should keep holding it back."""
+    squashed = re.sub(r"\s+", "", head).upper()
+    if not squashed:
+        return True
+    if _MARKER_OPENING.startswith(squashed):
+        return True
+    return squashed.startswith(_MARKER_OPENING) and ">>" not in squashed and len(squashed) <= 20
+
+
 def latin_leaks(text: str) -> list[str]:
     """Latin-script words still present (after normalize_for_speech) --
     entity names, product codes, anything not in the loanword table."""
