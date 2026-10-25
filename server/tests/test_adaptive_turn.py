@@ -3,6 +3,10 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+import asyncio
+
+from pipecat.frames.frames import STTMetadataFrame
+
 from adaptive_turn import AdaptiveSpeechTimeoutUserTurnStopStrategy, wait_secs
 from hindi_text import could_be_marker_prefix, infer_expected_answer, split_leading_marker, strip_answer_marker
 
@@ -30,6 +34,15 @@ def test_env_overrides(monkeypatch=None):
         assert wait_secs("long") == 3.5
     finally:
         del os.environ["TURN_WAIT_LONG_SECS"]
+
+
+def test_stt_p99_safety_timer_is_disabled():
+    """Pipecat would otherwise wait (Sarvam p99 1.17s - VAD stop 0.2s) ~0.97s after
+    every pause -- longer than the adaptive wait, which then never took effect."""
+    s = AdaptiveSpeechTimeoutUserTurnStopStrategy(session_id="t")
+    asyncio.run(s.process_frame(STTMetadataFrame(service_name="SarvamSTTService", ttfs_p99_latency=1.17)))
+    assert s._stt_timeout == 0.0
+    assert max(0.0, s._stt_timeout - 0.2) == 0.0  # the effective wait pipecat computes at VAD stop
 
 
 def test_marker_parsing():

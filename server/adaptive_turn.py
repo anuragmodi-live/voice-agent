@@ -29,6 +29,8 @@ from __future__ import annotations
 import os
 
 from loguru import logger
+from pipecat.frames.frames import Frame, STTMetadataFrame
+from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
 )
@@ -62,6 +64,23 @@ class AdaptiveSpeechTimeoutUserTurnStopStrategy(SpeechTimeoutUserTurnStopStrateg
         super().__init__(user_speech_timeout=wait_secs(NORMAL), **kwargs)
         self._session_id = session_id
         self._expected_answer = NORMAL
+
+    async def process_frame(self, frame: Frame) -> ProcessFrameResult:
+        result = await super().process_frame(frame)
+        if isinstance(frame, STTMetadataFrame):
+            # The parent also waits out an "STT latency safety net" (the STT's
+            # p99 time-to-final-transcript, minus the VAD stop window) after
+            # every pause, unless the transcript is marked finalized. Sarvam's
+            # transcripts are never marked finalized, so that timer ran on every
+            # turn: ~0.97s (1.17s p99 - 0.2s), longer than the user_speech_timeout
+            # this class adapts -- the adaptive wait never took effect, and each
+            # reply paid ~1s of dead air. It guards nothing here: a turn cannot end
+            # before a transcript has arrived (wait_for_transcript=True), Sarvam
+            # returns one transcript per flushed segment, and speech that arrives
+            # after a turn has ended simply starts a new turn (interrupting the
+            # in-flight reply).
+            self._stt_timeout = 0.0
+        return result
 
     @property
     def expected_answer(self) -> str:
