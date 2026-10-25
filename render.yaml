@@ -8,9 +8,17 @@
 # or written to this file).
 services:
   - type: web
-    name: munshi-backend
+    name: munshi-backend-sg
     env: docker
-    plan: free
+    # Singapore, not Render's default (Oregon): callers and the Sarvam/LLM APIs
+    # are in India/Asia, and every audio and API round trip to Oregon added
+    # ~250ms. A service's region cannot be changed after creation, so this only
+    # takes effect on a NEW service -- hence the new name and a new Blueprint.
+    region: singapore
+    # Starter, not free: the free plan's 0.15 CPU was pinned at its limit during
+    # a call (WebRTC audio + VAD + codec work), which caused choppy audio and
+    # slow turns. Starter gives 0.5 CPU / 512MB.
+    plan: starter
     dockerfilePath: ./server/Dockerfile
     dockerContext: ./server
     healthCheckPath: /health

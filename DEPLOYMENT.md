@@ -15,7 +15,10 @@ and Vercel to it.
 
 1. In the Render dashboard: **New +** -> **Blueprint**, point it at this
    GitHub repo. Render reads `render.yaml` and provisions one Docker web
-   service (`munshi-backend`) building `server/Dockerfile`.
+   service (`munshi-backend-sg`) building `server/Dockerfile`, in the
+   **Singapore** region on the **Starter** plan -- both set in `render.yaml`
+   (the Blueprint page never asks for a region, so without that line Render
+   picks Oregon, and a region can't be changed after creation).
 2. Render will prompt for these env vars (marked `sync: false` in
    `render.yaml` -- never read from or written to the repo):
 
@@ -36,10 +39,11 @@ and Vercel to it.
    dataset -- no data upload step needed.
 4. Note the resulting URL, e.g. `https://munshi-backend.onrender.com`.
 
-**Free-tier cold start**: Render's free plan spins the service down after
-~15 minutes idle. The first request after that takes 30-60s to wake it back
-up. Worth a heads-up to whoever's about to try it live, so a slow first
-response doesn't read as broken.
+**Plan**: the blueprint uses the paid Starter plan (0.5 CPU), which doesn't
+spin down when idle. On Render's free plan (0.15 CPU) the voice pipeline pins
+the CPU during a call -- choppy audio, slow turns -- and the service sleeps
+after ~15 minutes idle (30-60s to wake). If you switch `plan:` back to `free`
+for a throwaway demo, warn whoever tries it that the first request is slow.
 
 ## 2. Frontend on Vercel
 
