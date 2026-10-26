@@ -63,3 +63,16 @@ services:
         sync: false
       - key: TELEPHONY_SAMPLE_RATE
         value: "8000"
+      # SignalWire (set TELEPHONY_PROVIDER=signalwire in the dashboard to use it).
+      - key: TELEPHONY_PROVIDER
+        sync: false
+      - key: SIGNALWIRE_SPACE
+        sync: false
+      - key: SIGNALWIRE_PROJECT_ID
+        sync: false
+      - key: SIGNALWIRE_API_TOKEN
+        sync: false
+      - key: SIGNALWIRE_SIGNING_KEY
+        sync: false
+      - key: SIGNALWIRE_FROM_NUMBER
+        sync: false

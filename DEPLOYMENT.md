@@ -67,7 +67,18 @@ Munshi can ring your phone: Twilio calls you, and the agent answers.
 To receive calls instead, set the Twilio number's *A call comes in* webhook to
 `POST https://<service>.onrender.com/twilio/voice` and dial it.
 
-## 2. Frontend on Vercel
+### SignalWire instead of Twilio
+
+1. Create a SignalWire space; under *Phone Numbers* buy a number; open *API* to
+   note the Project ID, an API token and the **Signing Key**.
+2. A trial account only calls/receives verified numbers and blocks international
+   calling; add a card and fund at least $5 to lift it (needed to test from India).
+3. In the number's settings choose *Handle calls using -> a cXML webhook* and set
+   *When a call comes in* to `POST https://<service>.onrender.com/twilio/voice`.
+4. Render env: `TELEPHONY_PROVIDER=signalwire`, `SIGNALWIRE_SPACE`,
+   `SIGNALWIRE_PROJECT_ID`, `SIGNALWIRE_API_TOKEN`, `SIGNALWIRE_SIGNING_KEY`,
+   `SIGNALWIRE_FROM_NUMBER`, `TELEPHONY_ALLOWED_TO`. Redeploy, then dial the number.
+
 ## 2. Frontend on Vercel
 
 1. **New Project** -> import the same GitHub repo -> set the **Root

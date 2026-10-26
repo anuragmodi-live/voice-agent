@@ -1,10 +1,15 @@
-"""Twilio telephony glue: TwiML, request/stream authentication, outbound calls.
+"""Telephony glue (Twilio or SignalWire): TwiML/cXML, request/stream
+authentication, outbound calls.
 
 The voice pipeline itself is unchanged -- a phone call just arrives over a
-Twilio Media Streams WebSocket (8 kHz mu-law, converted by pipecat's
-TwilioFrameSerializer) instead of WebRTC. This module holds only the parts that
-are specific to Twilio and that must be right for the endpoints to be safe on
-the public internet, where every call costs real money:
+Media Streams WebSocket (8 kHz mu-law, converted by pipecat's
+TwilioFrameSerializer) instead of WebRTC. SignalWire's cXML is deliberately
+Twilio-compatible (same <Connect><Stream> verb, same connected/start/media/stop
+messages, same /2010-04-01 REST layout under /api/laml), so one code path serves
+both; TELEPHONY_PROVIDER picks the credentials, REST host and signature header.
+This module holds only the parts that are provider-specific and that must be
+right for the endpoints to be safe on the public internet, where every call
+costs real money:
 
 - /twilio/voice is a public webhook, so its X-Twilio-Signature is verified
   (Twilio's documented HMAC-SHA1 over the full URL + sorted POST params).
@@ -36,11 +41,86 @@ class TelephonyNotConfigured(RuntimeError):
     pass
 
 
-def _auth_token() -> str:
-    token = os.getenv("TWILIO_AUTH_TOKEN") or ""
-    if not token:
+def _first_env(*names: str) -> str:
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def provider() -> str:
+    """"twilio" (default) or "signalwire" -- set TELEPHONY_PROVIDER."""
+    value = (os.getenv("TELEPHONY_PROVIDER") or "twilio").strip().lower()
+    return "signalwire" if value == "signalwire" else "twilio"
+
+
+def _space_host() -> str:
+    host = (os.getenv("SIGNALWIRE_SPACE") or "").strip()
+    for prefix in ("https://", "http://"):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    return host.rstrip("/")
+
+
+def account_sid() -> str:
+    """Twilio Account SID, or the SignalWire Project ID (it is the AccountSid
+    SignalWire puts in its cXML webhooks too)."""
+    return _first_env("SIGNALWIRE_PROJECT_ID") if provider() == "signalwire" else _first_env("TWILIO_ACCOUNT_SID")
+
+
+def api_token() -> str:
+    """Secret for REST calls (outbound call, hang-up): Twilio auth token /
+    SignalWire API token."""
+    if provider() == "signalwire":
+        return _first_env("SIGNALWIRE_API_TOKEN")
+    return _first_env("TWILIO_AUTH_TOKEN")
+
+
+def from_number() -> str:
+    return _first_env("SIGNALWIRE_FROM_NUMBER") if provider() == "signalwire" else _first_env("TWILIO_FROM_NUMBER")
+
+
+def rest_base() -> str:
+    """REST root that ends in /2010-04-01 (Calls live under it)."""
+    if provider() == "signalwire":
+        host = _space_host()
+        if not host:
+            raise TelephonyNotConfigured("SIGNALWIRE_SPACE is not set (e.g. yourspace.signalwire.com)")
+        return f"https://{host}/api/laml/2010-04-01"
+    return TWILIO_API
+
+
+def serializer_base_url() -> str | None:
+    """`base_url` for pipecat's TwilioFrameSerializer (used only for its auto
+    hang-up), which appends /2010-04-01/Accounts/... itself. None = Twilio."""
+    if provider() == "signalwire":
+        host = _space_host()
+        if not host:
+            raise TelephonyNotConfigured("SIGNALWIRE_SPACE is not set (e.g. yourspace.signalwire.com)")
+        return f"https://{host}/api/laml"
+    return None
+
+
+def signature_header(headers) -> str | None:
+    """The webhook signature, from whichever header the provider sends:
+    SignalWire sends X-SignalWire-Signature (and X-Twilio-Signature as a
+    compatibility alias for cXML); Twilio sends X-Twilio-Signature."""
+    return headers.get("x-signalwire-signature") or headers.get("x-twilio-signature")
+
+
+def _signing_secret() -> str:
+    """Secret the provider signs webhooks with, and which our per-call stream
+    token is derived from: Twilio auth token / SignalWire Signing Key."""
+    if provider() == "signalwire":
+        secret = _first_env("SIGNALWIRE_SIGNING_KEY")
+        if not secret:
+            raise TelephonyNotConfigured("SIGNALWIRE_SIGNING_KEY is not set")
+        return secret
+    secret = _first_env("TWILIO_AUTH_TOKEN")
+    if not secret:
         raise TelephonyNotConfigured("TWILIO_AUTH_TOKEN is not set")
-    return token
+    return secret
 
 
 # ----------------------------------------------------------------- TwiML
@@ -83,7 +163,7 @@ def url_variants(url: str) -> list[str]:
 def request_is_from_twilio(url: str, form: dict[str, str], signature: str | None) -> bool:
     if not signature:
         return False
-    token = _auth_token()
+    token = _signing_secret()
     return any(
         hmac.compare_digest(twilio_signature(token, candidate, form), signature)
         for candidate in url_variants(url)
@@ -105,14 +185,14 @@ def unsigned_request_acceptable(form: dict[str, str]) -> bool:
     one of the numbers in TWILIO_ALLOWED_TO (as caller or callee). This is far
     weaker than a signature -- the SID is not a secret -- but it keeps a casual
     stranger who finds the URL from starting billable sessions."""
-    sid = os.getenv("TWILIO_ACCOUNT_SID") or ""
+    sid = account_sid()
     allowed = allowed_destinations()
     return bool(sid) and form.get("AccountSid") == sid and (form.get("To") in allowed or form.get("From") in allowed)
 
 
 def stream_token(call_sid: str) -> str:
     """One-call token embedded as a TwiML <Parameter> by the signed webhook."""
-    return hmac.new(_auth_token().encode(), f"stream:{call_sid}".encode(), hashlib.sha256).hexdigest()
+    return hmac.new(_signing_secret().encode(), f"stream:{call_sid}".encode(), hashlib.sha256).hexdigest()
 
 
 def stream_token_valid(call_sid: str | None, token: str | None) -> bool:
@@ -141,7 +221,8 @@ def public_base_url(headers, fallback_url: str) -> str:
 # ----------------------------------------------------------------- outbound test call
 
 def allowed_destinations() -> set[str]:
-    return {n.strip() for n in (os.getenv("TWILIO_ALLOWED_TO") or "").split(",") if n.strip()}
+    raw = _first_env("TELEPHONY_ALLOWED_TO", "TWILIO_ALLOWED_TO")
+    return {n.strip() for n in raw.split(",") if n.strip()}
 
 
 def destination_allowed(to: str) -> bool:
@@ -149,17 +230,17 @@ def destination_allowed(to: str) -> bool:
 
 
 async def place_call(to: str, voice_url: str) -> dict:
-    """Ask Twilio to ring `to` from our number and, on answer, fetch TwiML from
-    voice_url (our /twilio/voice). Returns Twilio's JSON for the new call."""
-    sid = os.getenv("TWILIO_ACCOUNT_SID") or ""
-    from_number = os.getenv("TWILIO_FROM_NUMBER") or ""
-    if not (sid and from_number):
-        raise TelephonyNotConfigured("TWILIO_ACCOUNT_SID / TWILIO_FROM_NUMBER are not set")
+    """Ask the provider to ring `to` from our number and, on answer, fetch
+    TwiML/cXML from voice_url (our /twilio/voice). Returns the provider's JSON
+    for the new call."""
+    sid, token, from_ = account_sid(), api_token(), from_number()
+    if not (sid and token and from_):
+        raise TelephonyNotConfigured(f"{provider()} account id, API token and from-number are not all set")
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
-            f"{TWILIO_API}/Accounts/{sid}/Calls.json",
-            auth=(sid, _auth_token()),
-            data={"To": to, "From": from_number, "Url": voice_url, "Method": "POST"},
+            f"{rest_base()}/Accounts/{sid}/Calls.json",
+            auth=(sid, token),
+            data={"To": to, "From": from_, "Url": voice_url, "Method": "POST"},
         )
     resp.raise_for_status()
     return resp.json()

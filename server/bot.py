@@ -33,12 +33,13 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.runner.types import RunnerArguments, WebSocketRunnerArguments
-from pipecat.runner.utils import create_transport
+from pipecat.runner.utils import create_transport, parse_telephony_websocket
+from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.sarvam.tts import SarvamTTSService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import BaseTransport, TransportParams
-from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
@@ -337,21 +338,47 @@ def _audio_rates(telephony_call: bool) -> dict:
     return {"audio_in_sample_rate": rate, "audio_out_sample_rate": rate}
 
 
+async def _telephony_transport(runner_args: WebSocketRunnerArguments) -> BaseTransport:
+    """Transport for a phone call's Media Streams websocket (Twilio or
+    SignalWire). Built here rather than by pipecat's create_transport because
+    that helper hard-wires Twilio's own REST host for the serializer's
+    auto hang-up; SignalWire needs its space URL (telephony.serializer_base_url).
+    SignalWire's stream handshake is the same shape as Twilio's, so
+    pipecat detects both as "twilio"."""
+    transport_type, call_data = await parse_telephony_websocket(runner_args.websocket)
+    runner_args.transport_type = transport_type
+    runner_args.call_data = call_data
+    if transport_type != "twilio":
+        raise ValueError(f"unsupported telephony stream handshake: {transport_type!r}")
+    serializer = TwilioFrameSerializer(
+        stream_sid=call_data["stream_id"],
+        call_sid=call_data["call_id"],
+        account_sid=telephony.account_sid(),
+        auth_token=telephony.api_token(),
+        base_url=telephony.serializer_base_url(),
+    )
+    params = FastAPIWebsocketParams(
+        audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False, serializer=serializer,
+    )
+    return FastAPIWebsocketTransport(websocket=runner_args.websocket, params=params)
+
+
 async def bot(runner_args: RunnerArguments):
     """Main bot entry point: server.py's /api/offer (WebRTC) and /twilio/ws
-    (Twilio Media Streams) both land here."""
+    (phone calls via Twilio or SignalWire Media Streams) both land here."""
     transport_params = {
         "webrtc": lambda: TransportParams(audio_in_enabled=True, audio_out_enabled=True),
-        # add_wav_header and the serializer are filled in by create_transport.
-        "twilio": lambda: FastAPIWebsocketParams(audio_in_enabled=True, audio_out_enabled=True),
     }
     try:
-        transport = await create_transport(runner_args, transport_params)
+        if isinstance(runner_args, WebSocketRunnerArguments):
+            transport = await _telephony_transport(runner_args)
+        else:
+            transport = await create_transport(runner_args, transport_params)
     except Exception as e:  # noqa: BLE001
         if not isinstance(runner_args, WebSocketRunnerArguments):
             raise
-        # e.g. TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN missing (the serializer
-        # needs them to hang up the call), or a non-Twilio handshake.
+        # e.g. the provider's account id / API token missing (the serializer
+        # needs them to hang up the call), or an unrecognised handshake.
         logger.error(f"Could not set up the telephony transport: {type(e).__name__}: {e}")
         await runner_args.websocket.close(code=1011)
         return

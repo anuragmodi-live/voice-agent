@@ -169,7 +169,7 @@ if _VOICE_AVAILABLE:
         if telephony.signature_check_enabled():
             try:
                 authentic = telephony.request_is_from_twilio(
-                    signed_url, form, request.headers.get("x-twilio-signature")
+                    signed_url, form, telephony.signature_header(request.headers)
                 )
             except telephony.TelephonyNotConfigured as e:
                 raise HTTPException(status_code=503, detail=str(e))
@@ -178,7 +178,7 @@ if _VOICE_AVAILABLE:
                 # apart from a URL Twilio signed differently than we rebuilt it.
                 logger.warning(
                     "Rejected /twilio/voice: invalid signature "
-                    f"(signature header present: {bool(request.headers.get('x-twilio-signature'))}; "
+                    f"(signature header present: {bool(telephony.signature_header(request.headers))}; "
                     f"rebuilt url: {signed_url}; host header: {request.headers.get('host')}; "
                     f"x-forwarded-host: {request.headers.get('x-forwarded-host')}; "
                     f"x-forwarded-proto: {request.headers.get('x-forwarded-proto')}; "

@@ -145,6 +145,60 @@ def test_public_base_url_prefers_override_then_proxy_headers():
         assert telephony.public_base_url({}, "http://fallback/") == "http://fallback"
 
 
+def test_signalwire_provider_uses_its_own_credentials_and_hosts():
+    env = dict(
+        TELEPHONY_PROVIDER="signalwire", SIGNALWIRE_SPACE="https://acme.signalwire.com/",
+        SIGNALWIRE_PROJECT_ID="PJ1", SIGNALWIRE_API_TOKEN="PT1", SIGNALWIRE_SIGNING_KEY="SK1",
+        SIGNALWIRE_FROM_NUMBER="+15550001111", TWILIO_ACCOUNT_SID="ACtwilio", TWILIO_AUTH_TOKEN="twilio-tok",
+    )
+    with _with_env(**env):
+        assert telephony.provider() == "signalwire"
+        assert telephony.account_sid() == "PJ1"
+        assert telephony.api_token() == "PT1"
+        assert telephony.from_number() == "+15550001111"
+        assert telephony.rest_base() == "https://acme.signalwire.com/api/laml/2010-04-01"
+        assert telephony.serializer_base_url() == "https://acme.signalwire.com/api/laml"
+        # webhooks are verified (and stream tokens minted) with the Signing Key, not the API token
+        url, form = "https://x.example/twilio/voice", {"CallSid": "CA1"}
+        assert telephony.request_is_from_twilio(url, form, telephony.twilio_signature("SK1", url, form))
+        assert not telephony.request_is_from_twilio(url, form, telephony.twilio_signature("PT1", url, form))
+        assert telephony.stream_token_valid("CA1", telephony.stream_token("CA1"))
+
+
+def test_signalwire_needs_space_and_signing_key():
+    with _with_env(TELEPHONY_PROVIDER="signalwire", SIGNALWIRE_SPACE=None, SIGNALWIRE_SIGNING_KEY=None):
+        for fn in (telephony.rest_base, telephony.serializer_base_url, lambda: telephony.stream_token("CA1")):
+            try:
+                fn()
+            except telephony.TelephonyNotConfigured:
+                pass
+            else:
+                raise AssertionError("expected TelephonyNotConfigured")
+
+
+def test_twilio_stays_the_default_provider():
+    with _with_env(TELEPHONY_PROVIDER=None, TWILIO_ACCOUNT_SID="AC1", TWILIO_AUTH_TOKEN="t", TWILIO_FROM_NUMBER="+1"):
+        assert telephony.provider() == "twilio"
+        assert telephony.rest_base() == "https://api.twilio.com/2010-04-01"
+        assert telephony.serializer_base_url() is None
+        assert telephony.account_sid() == "AC1" and telephony.api_token() == "t"
+    with _with_env(TELEPHONY_PROVIDER="nonsense"):
+        assert telephony.provider() == "twilio"
+
+
+def test_signature_header_accepts_either_provider_header():
+    assert telephony.signature_header({"x-signalwire-signature": "a", "x-twilio-signature": "b"}) == "a"
+    assert telephony.signature_header({"x-twilio-signature": "b"}) == "b"
+    assert telephony.signature_header({}) is None
+
+
+def test_allowed_destinations_prefers_the_generic_variable():
+    with _with_env(TELEPHONY_ALLOWED_TO="+911", TWILIO_ALLOWED_TO="+912"):
+        assert telephony.allowed_destinations() == {"+911"}
+    with _with_env(TELEPHONY_ALLOWED_TO=None, TWILIO_ALLOWED_TO="+912"):
+        assert telephony.allowed_destinations() == {"+912"}
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

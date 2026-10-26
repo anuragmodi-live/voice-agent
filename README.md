@@ -180,6 +180,13 @@ pipecat's `TwilioFrameSerializer`). Phone calls skip WebRTC and TURN entirely.
   unless it names our own `TWILIO_ACCOUNT_SID` and one of `TWILIO_ALLOWED_TO`;
   turn the flag back on afterwards. Calls placed via `/twilio/call` are signed
   and don't need it.
+- **SignalWire** works too (its cXML is Twilio-compatible): set
+  `TELEPHONY_PROVIDER=signalwire`, `SIGNALWIRE_SPACE`, `SIGNALWIRE_PROJECT_ID`,
+  `SIGNALWIRE_API_TOKEN`, `SIGNALWIRE_SIGNING_KEY` (webhook signatures and the
+  per-call stream token use the Signing Key) and `SIGNALWIRE_FROM_NUMBER`. Point
+  the number's incoming-call cXML webhook at `POST /twilio/voice` (the path name
+  is historical). A SignalWire trial blocks international calling and only
+  reaches verified numbers; adding a card and $5 lifts it.
 - The greeting is spoken when the stream connects (there is no RTVI "client
   ready" on a phone line); typing pings and reconnect/resume are web-only.
 
