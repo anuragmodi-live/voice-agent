@@ -29,6 +29,8 @@ services:
         value: deepseek
       - key: JUDGE_AUTO_RUN
         value: all
+      - key: SARVAM_VOICE_ID
+        value: ritu
       - key: DATABASE_URL
         sync: false
       - key: DEEPSEEK_API_KEY

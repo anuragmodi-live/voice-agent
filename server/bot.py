@@ -99,16 +99,16 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         ),
     )
 
-    # Text-to-Speech. "priya" on bulbul:v3 is the same voice/pace kyc-voice-agent
-    # confirmed via a listening test -- warm, unhurried delivery (pace 0.85,
-    # slightly under natural-speed default) reads as calmer/friendlier than
-    # 1.0, not sluggish. enable_preprocessing normalizes numbers/currency
-    # (₹ amounts, lakh/crore) into speakable form before synthesis.
+    # Text-to-Speech. "ritu" on bulbul:v3, chosen from a side-by-side listening
+    # test of the female voices (priya was the earlier default, inherited from
+    # kyc-voice-agent). Pace 0.85, slightly under the natural-speed default,
+    # reads as calmer/friendlier than 1.0, not sluggish. enable_preprocessing
+    # normalizes numbers/currency before synthesis.
     tts = SarvamTTSService(
         api_key=os.getenv("SARVAM_API_KEY"),
         settings=SarvamTTSService.Settings(
             model=os.getenv("SARVAM_TTS_MODEL") or "bulbul:v3",
-            voice=os.getenv("SARVAM_VOICE_ID") or "priya",
+            voice=os.getenv("SARVAM_VOICE_ID") or "ritu",
             pace=float(os.getenv("SARVAM_TTS_PACE") or 0.85),
             enable_preprocessing=True,
             language=Language.HI_IN,
