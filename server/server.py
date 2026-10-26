@@ -12,6 +12,7 @@ debugging/testing entrypoint even after that lands.
 import os
 import time
 import uuid
+from urllib.parse import parse_qsl
 
 from dotenv import load_dotenv
 
@@ -22,12 +23,14 @@ from dotenv import load_dotenv
 # silently ignoring whatever JUDGE_AUTO_RUN is actually set to.
 load_dotenv(override=True)
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException  # noqa: E402
+import httpx  # noqa: E402
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, WebSocket  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import admin  # noqa: E402
 import query_log  # noqa: E402
+import telephony  # noqa: E402
 from dev_llm_client import ask as llm_ask  # noqa: E402
 from session_store import SessionData, get_session, session_exists, set_session, update_session  # noqa: E402
 
@@ -56,7 +59,7 @@ async def health():
 # Phase-1-only install (no pipecat-ai) can still run /ask and /admin/*.
 # ---------------------------------------------------------------------
 try:
-    from pipecat.runner.types import SmallWebRTCRunnerArguments
+    from pipecat.runner.types import SmallWebRTCRunnerArguments, WebSocketRunnerArguments
     from pipecat.transports.smallwebrtc.request_handler import (
         SmallWebRTCPatchRequest, SmallWebRTCRequest, SmallWebRTCRequestHandler,
     )
@@ -146,6 +149,66 @@ if _VOICE_AVAILABLE:
     async def offer_ice_candidate(request: "SmallWebRTCPatchRequest"):
         await _webrtc_handler.handle_patch_request(request)
         return {"status": "success"}
+
+
+    # -----------------------------------------------------------------
+    # Telephony (Twilio Media Streams). See telephony.py for the security
+    # model: signed webhook -> per-call stream token -> allow-listed,
+    # admin-key-protected outbound test call.
+    # -----------------------------------------------------------------
+
+    @app.post("/twilio/voice")
+    async def twilio_voice(request: Request):
+        """Twilio's voice webhook: answers with TwiML that streams the call's
+        audio to /twilio/ws. Used both for inbound calls to the Twilio number
+        and for the outbound test call placed by /twilio/call."""
+        form = dict(parse_qsl((await request.body()).decode(), keep_blank_values=True))
+        base = telephony.public_base_url(request.headers, str(request.base_url))
+        signed_url = f"{base}{request.url.path}" + (f"?{request.url.query}" if request.url.query else "")
+        try:
+            authentic = telephony.request_is_from_twilio(
+                signed_url, form, request.headers.get("x-twilio-signature")
+            )
+        except telephony.TelephonyNotConfigured as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        if not authentic:
+            raise HTTPException(status_code=403, detail="invalid Twilio signature")
+
+        ws_url = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1) + "/twilio/ws"
+        twiml = telephony.twiml_connect_stream(ws_url, {
+            "auth": telephony.stream_token(form.get("CallSid", "")),
+            "from_number": form.get("From", ""),
+            "to_number": form.get("To", ""),
+        })
+        return Response(content=twiml, media_type="application/xml")
+
+    @app.websocket("/twilio/ws")
+    async def twilio_ws(websocket: WebSocket):
+        await websocket.accept()
+        # bot() reads Twilio's handshake, refuses a stream without the
+        # token minted by /twilio/voice, and runs the call to completion.
+        await run_voice_bot(WebSocketRunnerArguments(websocket=websocket))
+
+
+    class TwilioCallRequest(BaseModel):
+        to: str  # E.164, must be listed in TWILIO_ALLOWED_TO
+
+
+    @app.post("/twilio/call", dependencies=[Depends(admin.require_admin_key)])
+    async def twilio_call(body: TwilioCallRequest, request: Request):
+        """Ring `to` from the Twilio number and connect the agent when answered.
+        Admin-key protected AND limited to TWILIO_ALLOWED_TO, so it cannot be
+        used to dial arbitrary numbers."""
+        if not telephony.destination_allowed(body.to):
+            raise HTTPException(status_code=403, detail="destination is not in TWILIO_ALLOWED_TO")
+        base = telephony.public_base_url(request.headers, str(request.base_url))
+        try:
+            call = await telephony.place_call(body.to.strip(), f"{base}/twilio/voice")
+        except telephony.TelephonyNotConfigured as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=502, detail=f"Twilio rejected the call: {e.response.text[:300]}")
+        return {"call_sid": call.get("sid"), "status": call.get("status")}
 
 
 @app.post("/session/{session_id}/typing")

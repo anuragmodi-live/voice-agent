@@ -51,3 +51,15 @@ services:
         sync: false
       - key: ADMIN_KEY
         sync: false
+      # Twilio telephony (telephony.py). Secrets/numbers are entered in the
+      # Render dashboard, never in this public repo.
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: TWILIO_ALLOWED_TO
+        sync: false
+      - key: TELEPHONY_SAMPLE_RATE
+        value: "8000"

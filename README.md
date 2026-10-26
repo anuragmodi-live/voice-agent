@@ -154,6 +154,31 @@ Tests (plain asserts, also pytest-compatible), from `server/`:
 `python tests/test_hindi_numbers.py`, `tests/test_hindi_text.py`,
 `tests/test_speech_normalizer.py`, `tests/test_adaptive_turn.py`.
 
+## Telephony (Twilio)
+
+The same agent answers phone calls over Twilio Media Streams. A call is
+`phone -> Twilio -> POST /twilio/voice` (returns TwiML with a `<Stream>` to
+`wss://.../twilio/ws`), then the call's 8 kHz mu-law audio flows over that
+websocket into the existing STT -> LLM -> TTS pipeline (`bot.py` /
+pipecat's `TwilioFrameSerializer`). Phone calls skip WebRTC and TURN entirely.
+
+- `telephony.py` — TwiML, request/stream authentication, outbound call helper.
+- `POST /twilio/voice` — public, but rejects anything without a valid
+  `X-Twilio-Signature`; it mints a per-call token passed to the stream as a
+  `<Parameter>`.
+- `WS /twilio/ws` — refused (close 4401) unless the stream carries that call's
+  token, so knowing the URL is not enough to start a billable session.
+- `POST /twilio/call` `{"to": "+91..."}` (needs `X-Admin-Key`) — rings a number
+  from `TWILIO_FROM_NUMBER`; only numbers in `TWILIO_ALLOWED_TO` are accepted.
+- Env: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`,
+  `TWILIO_ALLOWED_TO`, `TELEPHONY_SAMPLE_RATE` (`8000` default, or `16000` to feed
+  STT upsampled audio — the phone line itself is always narrowband).
+- The greeting is spoken when the stream connects (there is no RTVI "client
+  ready" on a phone line); typing pings and reconnect/resume are web-only.
+
+Step-by-step test instructions: DEPLOYMENT.md, "Phone calls (Twilio)".
+Tests: `tests/test_telephony.py`.
+
 ## Setup
 
 ```bash

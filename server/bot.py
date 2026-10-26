@@ -32,16 +32,18 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.runner.types import RunnerArguments
+from pipecat.runner.types import RunnerArguments, WebSocketRunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.sarvam.tts import SarvamTTSService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 import pipeline_registry
+import telephony
 from adaptive_turn import AdaptiveSpeechTimeoutUserTurnStopStrategy
 from llm_factory import build_llm
 from prompts.greeting_hi import GREETING_TEXT
@@ -117,7 +119,17 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     llm = build_llm()
 
-    session_id = runner_args.session_id or "dev-session"
+    # A phone call (Twilio Media Streams over a websocket, see telephony.py and
+    # server.py's /twilio/ws) differs from the web client only at the edges:
+    # no RTVI "client ready" signal (so the greeting is triggered by the
+    # transport connecting instead), no typing pings, no reconnect/resume.
+    telephony_call = isinstance(runner_args, WebSocketRunnerArguments)
+    call_data = getattr(runner_args, "call_data", None)
+    session_id = (
+        runner_args.session_id
+        or (call_data.call_id if (telephony_call and call_data and call_data.call_id) else None)
+        or "dev-session"
+    )
     ask_calculation_engine = build_pipecat_tool(session_id)
 
     # A reconnect within RESUME_WINDOW_SECS of a disconnect (see server.py's
@@ -171,7 +183,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     voice_turn_observer = VoiceTurnObserver(session_id)
     worker = PipelineWorker(
         pipeline,
-        params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+        params=PipelineParams(enable_metrics=True, enable_usage_metrics=True, **_audio_rates(telephony_call)),
         observers=[voice_turn_observer],
     )
 
@@ -285,6 +297,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     async def on_client_connected(transport, client):
         logger.info("Client connected")
         update_session(session_id, connected_at=time.time(), disconnected_at=None)
+        if telephony_call:
+            # No RTVI client on a phone line, so greet as soon as the call's
+            # media stream is up (the web path does this from on_client_ready).
+            await worker.queue_frames([TTSSpeakFrame(GREETING_TEXT)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
@@ -308,12 +324,48 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     await runner.run()
 
 
+def _audio_rates(telephony_call: bool) -> dict:
+    """Pipeline sample rates for a phone call. Twilio's line is always 8 kHz
+    mu-law; pipecat's TwilioFrameSerializer resamples between that and the
+    pipeline rate, so the rate here only decides what STT/TTS run at.
+    TELEPHONY_SAMPLE_RATE=16000 feeds STT upsampled 16 kHz audio (some speech
+    models cope better with it than with 8 kHz) -- no new detail is added, the
+    line is still narrowband. Web calls keep pipecat's defaults."""
+    if not telephony_call:
+        return {}
+    rate = int(os.getenv("TELEPHONY_SAMPLE_RATE") or 8000)
+    return {"audio_in_sample_rate": rate, "audio_out_sample_rate": rate}
+
+
 async def bot(runner_args: RunnerArguments):
-    """Main bot entry point (called by server.py's /api/offer route)."""
+    """Main bot entry point: server.py's /api/offer (WebRTC) and /twilio/ws
+    (Twilio Media Streams) both land here."""
     transport_params = {
         "webrtc": lambda: TransportParams(audio_in_enabled=True, audio_out_enabled=True),
+        # add_wav_header and the serializer are filled in by create_transport.
+        "twilio": lambda: FastAPIWebsocketParams(audio_in_enabled=True, audio_out_enabled=True),
     }
-    transport = await create_transport(runner_args, transport_params)
+    try:
+        transport = await create_transport(runner_args, transport_params)
+    except Exception as e:  # noqa: BLE001
+        if not isinstance(runner_args, WebSocketRunnerArguments):
+            raise
+        # e.g. TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN missing (the serializer
+        # needs them to hang up the call), or a non-Twilio handshake.
+        logger.error(f"Could not set up the telephony transport: {type(e).__name__}: {e}")
+        await runner_args.websocket.close(code=1011)
+        return
+    if isinstance(runner_args, WebSocketRunnerArguments):
+        # create_transport has now read Twilio's handshake into call_data. The
+        # stream must carry the token only our signed /twilio/voice webhook
+        # mints for this exact call -- otherwise anyone who finds the
+        # websocket URL could open a (billable) agent session.
+        call_data = runner_args.call_data
+        token = (call_data.body or {}).get("auth") if call_data else None
+        if not telephony.stream_token_valid(call_data.call_id if call_data else None, token):
+            logger.warning("Rejecting telephony stream with a missing/invalid token")
+            await runner_args.websocket.close(code=4401)
+            return
     await run_bot(transport, runner_args)
 
 

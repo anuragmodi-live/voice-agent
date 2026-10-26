@@ -45,6 +45,29 @@ the CPU during a call -- choppy audio, slow turns -- and the service sleeps
 after ~15 minutes idle (30-60s to wake). If you switch `plan:` back to `free`
 for a throwaway demo, warn whoever tries it that the first request is slow.
 
+## Phone calls (Twilio) — quickest test
+
+Munshi can ring your phone: Twilio calls you, and the agent answers.
+
+1. **Twilio Console** (trial account is enough): get the trial voice number;
+   add your own mobile under *Phone Numbers -> Verified Caller IDs* (a trial
+   account can only call verified numbers); enable the destination country under
+   *Voice -> Settings -> Geo Permissions* (India for `+91`).
+2. **Render** -> the service -> *Environment*: set `TWILIO_ACCOUNT_SID`,
+   `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` (your Twilio number, E.164) and
+   `TWILIO_ALLOWED_TO` (your verified mobile, E.164). Redeploy.
+3. Trigger the call (your admin key, your number):
+
+   ```bash
+   curl -X POST https://<service>.onrender.com/twilio/call      -H "X-Admin-Key: <ADMIN_KEY>" -H "Content-Type: application/json"      -d '{"to": "+91XXXXXXXXXX"}'
+   ```
+4. Answer. A trial account plays a short Twilio message first (and may ask for
+   a keypress); then the agent greets you.
+
+To receive calls instead, set the Twilio number's *A call comes in* webhook to
+`POST https://<service>.onrender.com/twilio/voice` and dial it.
+
+## 2. Frontend on Vercel
 ## 2. Frontend on Vercel
 
 1. **New Project** -> import the same GitHub repo -> set the **Root
