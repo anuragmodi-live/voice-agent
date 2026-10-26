@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 import httpx  # noqa: E402
+from loguru import logger  # noqa: E402
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, WebSocket  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
@@ -172,6 +173,16 @@ if _VOICE_AVAILABLE:
         except telephony.TelephonyNotConfigured as e:
             raise HTTPException(status_code=503, detail=str(e))
         if not authentic:
+            # Nothing secret here -- just enough to tell a wrong auth token
+            # apart from a URL Twilio signed differently than we rebuilt it.
+            logger.warning(
+                "Rejected /twilio/voice: invalid signature "
+                f"(signature header present: {bool(request.headers.get('x-twilio-signature'))}; "
+                f"rebuilt url: {signed_url}; host header: {request.headers.get('host')}; "
+                f"x-forwarded-host: {request.headers.get('x-forwarded-host')}; "
+                f"x-forwarded-proto: {request.headers.get('x-forwarded-proto')}; "
+                f"form keys: {sorted(form)})"
+            )
             raise HTTPException(status_code=403, detail="invalid Twilio signature")
 
         ws_url = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1) + "/twilio/ws"

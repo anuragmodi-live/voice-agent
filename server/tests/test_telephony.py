@@ -51,6 +51,14 @@ def test_signature_accepted_with_or_without_explicit_default_port():
         assert telephony.request_is_from_twilio("https://h.example:443/twilio/voice", form, sig2)
 
 
+def test_signature_accepted_when_console_url_was_typed_with_the_other_scheme():
+    with _with_env(TWILIO_AUTH_TOKEN="tok"):
+        form = {"CallSid": "CA1"}
+        sig = telephony.twilio_signature("tok", "http://h.example/twilio/voice", form)  # pasted http://
+        assert telephony.request_is_from_twilio("https://h.example/twilio/voice", form, sig)
+        assert not telephony.request_is_from_twilio("https://other.example/twilio/voice", form, sig)
+
+
 def test_request_validation_accepts_genuine_and_rejects_forged():
     with _with_env(TWILIO_AUTH_TOKEN="tok"):
         url, form = "https://x.example/twilio/voice", {"CallSid": "CA1", "From": "+911"}

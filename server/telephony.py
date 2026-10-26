@@ -64,16 +64,20 @@ def twilio_signature(auth_token: str, url: str, form: dict[str, str]) -> str:
     return base64.b64encode(digest).decode()
 
 
-def _url_variants(url: str) -> list[str]:
-    """Twilio may sign the URL with or without an explicit default port
-    (:443 / :80) depending on how the webhook was configured -- its own SDK
-    validator accepts either, so do the same."""
+def url_variants(url: str) -> list[str]:
+    """Every spelling of `url` Twilio might have signed: with or without an
+    explicit default port (:443/:80), and -- because the URL is signed exactly
+    as typed into the Twilio console, and a pasted `http://` is easy to miss --
+    with either scheme. Twilio's own SDK validator tries the port variants;
+    the scheme variants cost nothing in security, since a forger still needs the
+    auth token to produce any valid signature."""
     parts = urlsplit(url)
-    default_port = 443 if parts.scheme == "https" else 80
-    bare_host = parts.hostname or ""
-    with_port = parts._replace(netloc=f"{bare_host}:{default_port}")
-    without_port = parts._replace(netloc=bare_host)
-    return list(dict.fromkeys([url, urlunsplit(with_port), urlunsplit(without_port)]))
+    host = parts.hostname or ""
+    variants = [url]
+    for scheme, default_port in (("https", 443), ("http", 80)):
+        for netloc in (host, f"{host}:{default_port}"):
+            variants.append(urlunsplit(parts._replace(scheme=scheme, netloc=netloc)))
+    return list(dict.fromkeys(variants))
 
 
 def request_is_from_twilio(url: str, form: dict[str, str], signature: str | None) -> bool:
@@ -82,7 +86,7 @@ def request_is_from_twilio(url: str, form: dict[str, str], signature: str | None
     token = _auth_token()
     return any(
         hmac.compare_digest(twilio_signature(token, candidate, form), signature)
-        for candidate in _url_variants(url)
+        for candidate in url_variants(url)
     )
 
 
