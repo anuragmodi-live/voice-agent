@@ -12,6 +12,8 @@ engine only assumes the same 9-file schema (sales/purchase/bank/inventory
 transactions + products/suppliers/customers/business_events + business.json)
 — point `DATA_DIR` at any dataset with that shape.
 
+**Rebuilding or operating this stack?** See [docs/REPLICATION_GUIDE.md](docs/REPLICATION_GUIDE.md) -- architecture, step-by-step setup (local, Render, Vercel, phone), configuration reference, troubleshooting and a measured per-minute cost model.
+
 ## Phase 1 (this repo, today) vs. Phase 2 (planned)
 
 **Phase 1** — everything except live voice hardware: the calculation engine,
