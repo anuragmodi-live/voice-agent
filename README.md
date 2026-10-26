@@ -173,6 +173,13 @@ pipecat's `TwilioFrameSerializer`). Phone calls skip WebRTC and TURN entirely.
 - Env: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`,
   `TWILIO_ALLOWED_TO`, `TELEPHONY_SAMPLE_RATE` (`8000` default, or `16000` to feed
   STT upsampled audio — the phone line itself is always narrowband).
+- `TWILIO_VALIDATE_SIGNATURE` (default on). Twilio's console "Try out Voice ->
+  Start a call" dialog sends its webhook request **unsigned**, so it only works
+  with this set to `false` in the Render dashboard (never in `render.yaml` --
+  this repo is public). In that test mode an unsigned request is still refused
+  unless it names our own `TWILIO_ACCOUNT_SID` and one of `TWILIO_ALLOWED_TO`;
+  turn the flag back on afterwards. Calls placed via `/twilio/call` are signed
+  and don't need it.
 - The greeting is spoken when the stream connects (there is no RTVI "client
   ready" on a phone line); typing pings and reconnect/resume are web-only.
 

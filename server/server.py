@@ -166,28 +166,43 @@ if _VOICE_AVAILABLE:
         form = dict(parse_qsl((await request.body()).decode(), keep_blank_values=True))
         base = telephony.public_base_url(request.headers, str(request.base_url))
         signed_url = f"{base}{request.url.path}" + (f"?{request.url.query}" if request.url.query else "")
-        try:
-            authentic = telephony.request_is_from_twilio(
-                signed_url, form, request.headers.get("x-twilio-signature")
-            )
-        except telephony.TelephonyNotConfigured as e:
-            raise HTTPException(status_code=503, detail=str(e))
-        if not authentic:
-            # Nothing secret here -- just enough to tell a wrong auth token
-            # apart from a URL Twilio signed differently than we rebuilt it.
-            logger.warning(
-                "Rejected /twilio/voice: invalid signature "
-                f"(signature header present: {bool(request.headers.get('x-twilio-signature'))}; "
-                f"rebuilt url: {signed_url}; host header: {request.headers.get('host')}; "
-                f"x-forwarded-host: {request.headers.get('x-forwarded-host')}; "
-                f"x-forwarded-proto: {request.headers.get('x-forwarded-proto')}; "
-                f"form keys: {sorted(form)})"
-            )
-            raise HTTPException(status_code=403, detail="invalid Twilio signature")
+        if telephony.signature_check_enabled():
+            try:
+                authentic = telephony.request_is_from_twilio(
+                    signed_url, form, request.headers.get("x-twilio-signature")
+                )
+            except telephony.TelephonyNotConfigured as e:
+                raise HTTPException(status_code=503, detail=str(e))
+            if not authentic:
+                # Nothing secret here -- just enough to tell a wrong auth token
+                # apart from a URL Twilio signed differently than we rebuilt it.
+                logger.warning(
+                    "Rejected /twilio/voice: invalid signature "
+                    f"(signature header present: {bool(request.headers.get('x-twilio-signature'))}; "
+                    f"rebuilt url: {signed_url}; host header: {request.headers.get('host')}; "
+                    f"x-forwarded-host: {request.headers.get('x-forwarded-host')}; "
+                    f"x-forwarded-proto: {request.headers.get('x-forwarded-proto')}; "
+                    f"form keys: {sorted(form)})"
+                )
+                raise HTTPException(status_code=403, detail="invalid Twilio signature")
+        else:
+            # TEST MODE (TWILIO_VALIDATE_SIGNATURE=false): needed for Twilio's
+            # console "Start a call" dialog, which sends unsigned requests.
+            if not telephony.unsigned_request_acceptable(form):
+                logger.warning(
+                    "Rejected unsigned /twilio/voice (signature check is OFF): AccountSid must be ours and "
+                    "To/From must be in TWILIO_ALLOWED_TO"
+                )
+                raise HTTPException(status_code=403, detail="unsigned request not acceptable")
+            logger.warning("Accepting UNSIGNED /twilio/voice request -- TWILIO_VALIDATE_SIGNATURE is off (test mode)")
 
         ws_url = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1) + "/twilio/ws"
+        try:
+            stream_auth = telephony.stream_token(form.get("CallSid", ""))
+        except telephony.TelephonyNotConfigured as e:
+            raise HTTPException(status_code=503, detail=str(e))
         twiml = telephony.twiml_connect_stream(ws_url, {
-            "auth": telephony.stream_token(form.get("CallSid", "")),
+            "auth": stream_auth,
             "from_number": form.get("From", ""),
             "to_number": form.get("To", ""),
         })

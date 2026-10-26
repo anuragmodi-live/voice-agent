@@ -104,6 +104,28 @@ def test_twiml_is_well_formed_and_round_trips_awkward_values():
     }
 
 
+def test_signature_check_defaults_on_and_only_explicit_off_disables_it():
+    for value, expected in [(None, True), ("", True), ("true", True), ("garbage", True),
+                            ("false", False), ("FALSE", False), ("0", False), ("off", False), (" no ", False)]:
+        with _with_env(TWILIO_VALIDATE_SIGNATURE=value):
+            assert telephony.signature_check_enabled() is expected, value
+
+
+def test_unsigned_request_needs_our_account_sid_and_an_allowed_number():
+    env = dict(TWILIO_ACCOUNT_SID="ACmine", TWILIO_ALLOWED_TO="+919999999999")
+    with _with_env(**env):
+        ok = {"AccountSid": "ACmine", "To": "+919999999999", "From": "+17370000000"}
+        assert telephony.unsigned_request_acceptable(ok)
+        assert telephony.unsigned_request_acceptable({**ok, "To": "+1555", "From": "+919999999999"})  # inbound
+        assert not telephony.unsigned_request_acceptable({**ok, "AccountSid": "ACother"})
+        assert not telephony.unsigned_request_acceptable({**ok, "To": "+1555", "From": "+1556"})
+        assert not telephony.unsigned_request_acceptable({})
+    with _with_env(TWILIO_ACCOUNT_SID=None, TWILIO_ALLOWED_TO="+919999999999"):
+        assert not telephony.unsigned_request_acceptable({"AccountSid": "", "To": "+919999999999"})
+    with _with_env(TWILIO_ACCOUNT_SID="ACmine", TWILIO_ALLOWED_TO=None):
+        assert not telephony.unsigned_request_acceptable({"AccountSid": "ACmine", "To": "+919999999999"})
+
+
 def test_destination_allow_list():
     with _with_env(TWILIO_ALLOWED_TO="+919999999999, +14155550100"):
         assert telephony.destination_allowed("+919999999999")

@@ -90,6 +90,26 @@ def request_is_from_twilio(url: str, form: dict[str, str], signature: str | None
     )
 
 
+def signature_check_enabled() -> bool:
+    """On unless TWILIO_VALIDATE_SIGNATURE is explicitly false/0/no/off. Meant
+    to be switched off only while testing: Twilio's console "Try out Voice ->
+    Start a call" dialog sends its webhook request UNSIGNED, so with the check
+    on it can never work. Set it in the Render dashboard, not in render.yaml
+    (this repo is public and the safe default must stay on)."""
+    return (os.getenv("TWILIO_VALIDATE_SIGNATURE") or "true").strip().lower() not in ("false", "0", "no", "off")
+
+
+def unsigned_request_acceptable(form: dict[str, str]) -> bool:
+    """The minimum still required of an UNSIGNED /twilio/voice request while the
+    signature check is off: it must name our own Twilio AccountSid and involve
+    one of the numbers in TWILIO_ALLOWED_TO (as caller or callee). This is far
+    weaker than a signature -- the SID is not a secret -- but it keeps a casual
+    stranger who finds the URL from starting billable sessions."""
+    sid = os.getenv("TWILIO_ACCOUNT_SID") or ""
+    allowed = allowed_destinations()
+    return bool(sid) and form.get("AccountSid") == sid and (form.get("To") in allowed or form.get("From") in allowed)
+
+
 def stream_token(call_sid: str) -> str:
     """One-call token embedded as a TwiML <Parameter> by the signed webhook."""
     return hmac.new(_auth_token().encode(), f"stream:{call_sid}".encode(), hashlib.sha256).hexdigest()
